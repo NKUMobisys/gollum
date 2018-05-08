@@ -6,12 +6,18 @@ require 'mustache/sinatra'
 require 'useragent'
 require 'stringex'
 
+require "sinatra/reloader" if settings.development?
+
 require 'gollum'
 require 'gollum/views/layout'
 require 'gollum/views/editable'
 require 'gollum/views/has_page'
 
 require File.expand_path '../helpers', __FILE__
+
+# p File.expand_path '../sso', __FILE__
+require File.expand_path '../sso', __FILE__
+
 
 #required to upload bigger binary files
 Gollum::set_git_timeout(120)
@@ -49,6 +55,8 @@ module Precious
   class App < Sinatra::Base
     register Mustache::Sinatra
     include Precious::Helpers
+    include SSO
+
 
     dir     = File.dirname(File.expand_path(__FILE__))
 
@@ -71,6 +79,7 @@ module Precious
     set :public_folder, "#{dir}/public/gollum"
     set :static, true
     set :default_markup, :markdown
+    set :server, :puma
 
     set :mustache, {
         # Tell mustache where the Views constant lives
@@ -83,15 +92,21 @@ module Precious
         :views     => "#{dir}/views"
     }
 
+    enable :sessions
+    set :sessions, :expire_after => 3600*6
+
     # Sinatra error handling
     configure :development, :staging do
       enable :show_exceptions, :dump_errors
       disable :raise_errors, :clean_trace
+      register Sinatra::Reloader if settings.development?
     end
 
     configure :test do
       enable :logging, :raise_errors, :dump_errors
     end
+
+
 
     before do
       settings.wiki_options[:allow_editing] = settings.wiki_options.fetch(:allow_editing, true)
@@ -104,6 +119,16 @@ module Precious
       @css = settings.wiki_options[:css]
       @js  = settings.wiki_options[:js]
       @mathjax_config = settings.wiki_options[:mathjax_config]
+    end
+
+    # +1s
+    def refresh_session
+      session.update({})
+    end
+
+    before do
+      authenticate_user!
+      refresh_session
     end
 
     get '/' do
@@ -202,7 +227,7 @@ module Precious
           :message => "Uploaded file to #{dir}/#{reponame}",
           :parent  => wiki.repo.head.commit,
       }
-      author  = session['gollum.author']
+      author  = {name: session[:user]["name"]}
       unless author.nil?
         options.merge! author
       end
@@ -577,7 +602,7 @@ module Precious
     def commit_message
       msg               = (params[:message].nil? or params[:message].empty?) ? "[no message]" : params[:message]
       commit_message    = { :message => msg }
-      author_parameters = session['gollum.author']
+      author_parameters = {name: session[:user]["name"], email: session[:user]["email"]}
       commit_message.merge! author_parameters unless author_parameters.nil?
       commit_message
     end
